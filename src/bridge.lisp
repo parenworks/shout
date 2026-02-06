@@ -51,7 +51,40 @@
     ("discord"
      ((:url "Webhook URL" "Discord webhook URL from channel settings")
       (:server-id "Channel ID" "Channel ID (optional, needed for undo)" t)
-      (:username "Username" "Custom webhook username (optional)" t))))
+      (:username "Username" "Custom webhook username (optional)" t)))
+    ("file"
+     ((:path "Directory" "Directory to save posts in (e.g. ~/posts/)")))
+    ("git"
+     ((:path "Repository" "Path to git repository (e.g. ~/blog/)")))
+    ("webdav"
+     ((:base-url "Base URL" "WebDAV server URL (e.g. https://dav.example.com/posts)")
+      (:username "Username" "WebDAV username (leave empty for no auth)" t)
+      (:password "Password" "WebDAV password" t)
+      (:authorization "Auth Header" "Full Authorization header (alternative to basic auth)" t)))
+    ("tumblr"
+     ((:blog "Blog Name" "Your Tumblr blog name" t)
+      (:key "OAuth Key" "Tumblr OAuth consumer key")
+      (:secret "OAuth Secret" "Tumblr OAuth consumer secret")))
+    ("lichat"
+     ((:hostname "Hostname" "Lichat server hostname (e.g. chat.tymoon.eu)")
+      (:port "Port" "Server port (default: 1111)" t)
+      (:username "Username" "Lichat username")
+      (:password "Password" "Lichat password (if any)" t)
+      (:channel "Channel" "Channel to post in")))
+    ("pixiv"
+     ((:cookie-string "Cookies" "Paste cookie string from browser console (see help)")))
+    ("reader"
+     ((:base-url "Base URL" "Reader instance URL (e.g. https://reader.tymoon.eu)")
+      (:key "OAuth Key" "Reader OAuth app key")
+      (:secret "OAuth Secret" "Reader OAuth app secret")))
+    ("studio"
+     ((:api-base "API Base" "Studio API URL (e.g. https://studio.tymoon.eu/api)")
+      (:key "OAuth Key" "Studio OAuth app key")
+      (:secret "OAuth Secret" "Studio OAuth app secret")))
+    ("cohost"
+     ((:email "Email" "Cohost email address (NOTE: Cohost shut down in 2024)")
+      (:password "Password" "Cohost password")
+      (:page "Page Handle" "Page handle to post on" t))))
   "Setup fields for each client type: (type-name ((keyword label help-text &optional optional-p)...))")
 
 (defun client-setup-fields (type-name)
@@ -143,6 +176,41 @@
                        clients))
                (org.shirakumo.multiposter:clients *multiposter*))
       (sort clients #'string< :key #'client-name))))
+
+;;; ============================================================
+;;; Client configuration
+;;; ============================================================
+
+(defun add-client-to-config (type-name client-name field-values)
+  "Add a new client to the multiposter config.
+TYPE-NAME is the client type (e.g. \"bluesky\").
+CLIENT-NAME is the user-chosen name for this client.
+FIELD-VALUES is an alist of (keyword . string-value)."
+  (unless *multiposter*
+    (load-multiposter-config))
+  (when *multiposter*
+    (let* ((type-sym (find-symbol (string-upcase type-name)
+                                  (find-package :org.shirakumo.multiposter)))
+           (client (when type-sym
+                     (apply #'make-instance type-sym
+                            (loop for (key . val) in field-values
+                                  append (list key val))))))
+      (when client
+        (org.shirakumo.multiposter:add-client client *multiposter*)
+        ;; Rename: multiposter uses the name as hash key
+        (setf (gethash client-name (org.shirakumo.multiposter:clients *multiposter*))
+              client)
+        ;; Try setup
+        (ignore-errors (org.shirakumo.multiposter:setup client))
+        ;; Save config
+        (ignore-errors (org.shirakumo.multiposter:save-config *multiposter*))
+        ;; Return new client-info
+        (make-instance 'client-info
+                       :name client-name
+                       :type-name type-name
+                       :enabled-p t
+                       :ready-p (ignore-errors (org.shirakumo.multiposter:ready-p client))
+                       :client-object client)))))
 
 ;;; ============================================================
 ;;; Posting

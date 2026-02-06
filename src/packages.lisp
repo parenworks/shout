@@ -142,6 +142,16 @@
    ;; Help bar
    #:help-bar
    #:help-bar-bindings
+   ;; Config form
+   #:config-form
+   #:config-form-client-type
+   #:config-form-fields
+   #:config-form-values
+   #:config-form-selected
+   #:config-form-submitted
+   #:config-form-result
+   #:config-form-field-value
+   #:config-form-set-value
    ;; Drawing utilities
    #:clear-region
    #:next-spinner-frame
@@ -166,6 +176,7 @@
    #:update-help-bar
    #:layout-screen
    #:render-screen
+   #:remove-widget
    #:dispatch-key))
 
 (defpackage #:shout.bridge
@@ -190,6 +201,7 @@
    #:client-tags-in-body-p
    #:load-saved-tags
    #:save-tags
+   #:add-client-to-config
    #:client-object))
 
 (defpackage #:shout

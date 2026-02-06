@@ -45,6 +45,16 @@
           (append (screen-focus-ring s) (list w))))
   (setf (screen-dirty s) t))
 
+(defgeneric remove-widget (screen widget)
+  (:documentation "Remove a widget from the screen"))
+
+(defmethod remove-widget ((s screen) (w widget))
+  (setf (screen-widgets s) (remove w (screen-widgets s)))
+  (setf (screen-focus-ring s) (remove w (screen-focus-ring s)))
+  (when (>= (screen-focus-index s) (length (screen-focus-ring s)))
+    (setf (screen-focus-index s) (max 0 (1- (length (screen-focus-ring s))))))
+  (setf (screen-dirty s) t))
+
 (defmethod focused-widget ((s screen))
   (when (screen-focus-ring s)
     (nth (screen-focus-index s) (screen-focus-ring s))))
@@ -138,6 +148,9 @@
     ;; Dispatch to focused widget
     (t
      (let ((fw (focused-widget s)))
-       (if (and fw (handle-key fw key))
-           :handled
-           nil)))))
+       (when fw
+         (let ((result (handle-key fw key)))
+           (case result
+             ((nil) nil)
+             (:configure :configure)
+             (t :handled))))))))

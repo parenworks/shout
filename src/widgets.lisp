@@ -505,6 +505,9 @@
       ((and (key-event-char key) (char= (key-event-char key) #\Space))
        (toggle-checked cl)
        t)
+      ;; Enter - signal configure request
+      ((and (key-event-code key) (eq (key-event-code key) :enter))
+       :configure)
       (t nil))))
 
 ;;; ============================================================
@@ -778,3 +781,172 @@
             (write-string " │ " *terminal-io*)
             (incf col entry-len)))))
     (reset)))
+
+;;; ============================================================
+;;; Config Form - modal form for client configuration
+;;; ============================================================
+
+(defclass config-form (panel)
+  ((client-type :initarg :client-type :accessor config-form-client-type :initform nil)
+   (fields :initarg :fields :accessor config-form-fields :initform nil
+           :documentation "List of (keyword label help-text optional-p)")
+   (values :accessor config-form-values :initform (make-hash-table :test 'equal)
+           :documentation "Hash of keyword -> string value")
+   (selected :accessor config-form-selected :initform 0)
+   (editing :accessor config-form-editing :initform t
+            :documentation "Always editing the selected field")
+   (submitted :accessor config-form-submitted :initform nil
+              :documentation "Set to :submit or :cancel when done")
+   (scroll-offset :accessor config-form-scroll-offset :initform 0))
+  (:documentation "Modal form for configuring a multiposter client"))
+
+(defmethod initialize-instance :after ((cf config-form) &key)
+  (setf (widget-help-keys cf)
+        '(("↑↓" . "field") ("Enter" . "next/save") ("C-g" . "cancel")
+          ("C-u" . "clear") ("Type" . "edit"))))
+
+(defun config-form-field-value (cf index)
+  (let ((field (nth index (config-form-fields cf))))
+    (when field
+      (gethash (first field) (config-form-values cf) ""))))
+
+(defun config-form-set-value (cf index value)
+  (let ((field (nth index (config-form-fields cf))))
+    (when field
+      (setf (gethash (first field) (config-form-values cf)) value))))
+
+(defun config-form-result (cf)
+  "Return an alist of (keyword . value) for non-empty fields."
+  (loop for field in (config-form-fields cf)
+        for key = (first field)
+        for val = (gethash key (config-form-values cf) "")
+        when (> (length val) 0)
+        collect (cons key val)))
+
+(defmethod render ((cf config-form))
+  (call-next-method)
+  (let* ((inner-x (+ (widget-x cf) 2))
+         (inner-y (+ (widget-y cf) 1))
+         (inner-w (- (widget-width cf) 4))
+         (inner-h (- (widget-height cf) 2))
+         (fields (config-form-fields cf))
+         (offset (config-form-scroll-offset cf))
+         (row 0))
+    ;; Clear inner area
+    (clear-region inner-x inner-y inner-w inner-h)
+    ;; Render fields: each field takes 2 rows (label, then input)
+    (loop for i from offset below (length fields)
+          while (< row (1- inner-h))
+          do (let* ((field (nth i fields))
+                    (label (second field))
+                    (help (third field))
+                    (optional-p (fourth field))
+                    (value (gethash (first field) (config-form-values cf) ""))
+                    (selected-p (= i (config-form-selected cf))))
+               ;; Label row
+               (cursor-to (+ inner-y row) inner-x)
+               (if selected-p (fg :accent) (fg :muted))
+               (when selected-p (bold))
+               (write-string label *terminal-io*)
+               (reset)
+               (when optional-p
+                 (fg :muted)
+                 (write-string " (optional)" *terminal-io*)
+                 (reset))
+               (incf row)
+               ;; Input row
+               (when (< row inner-h)
+                 (cursor-to (+ inner-y row) inner-x)
+                 (if selected-p
+                     (progn
+                       (fg :accent)
+                       (write-string "▸ " *terminal-io*)
+                       (reset)
+                       (fg :white)
+                       (let ((display (if (> (length value) (- inner-w 4))
+                                         (subseq value (max 0 (- (length value) (- inner-w 4))))
+                                         value)))
+                         (write-string display *terminal-io*))
+                       ;; Cursor indicator
+                       (fg :accent)
+                       (write-string "▏" *terminal-io*)
+                       (reset))
+                     (progn
+                       (fg :muted)
+                       (write-string "  " *terminal-io*)
+                       (if (> (length value) 0)
+                           (progn
+                             (fg :white)
+                             (let ((display (if (> (length value) (- inner-w 4))
+                                               (subseq value 0 (- inner-w 4))
+                                               value)))
+                               (write-string display *terminal-io*)))
+                           (progn
+                             (fg :muted)
+                             (italic)
+                             (let ((hint (if (> (length help) (- inner-w 4))
+                                            (subseq help 0 (- inner-w 4))
+                                            help)))
+                               (write-string hint *terminal-io*))))
+                       (reset)))
+                 (incf row))
+               ;; Spacer row
+               (when (< row inner-h)
+                 (incf row))))))
+
+(defmethod handle-key ((cf config-form) key)
+  (let ((n-fields (length (config-form-fields cf))))
+    (cond
+      ;; Ctrl+G - cancel
+      ((and (key-event-char key) (key-event-ctrl-p key)
+            (char= (key-event-char key) #\g))
+       (setf (config-form-submitted cf) :cancel)
+       t)
+      ;; Up - previous field
+      ((and (key-event-code key) (eq (key-event-code key) :up))
+       (when (> (config-form-selected cf) 0)
+         (decf (config-form-selected cf))
+         (when (< (config-form-selected cf) (config-form-scroll-offset cf))
+           (decf (config-form-scroll-offset cf))))
+       t)
+      ;; Down - next field
+      ((and (key-event-code key) (eq (key-event-code key) :down))
+       (when (< (config-form-selected cf) (1- n-fields))
+         (incf (config-form-selected cf))
+         (let ((inner-h (- (widget-height cf) 2))
+               (rows-per-field 3))
+           (when (> (* (- (config-form-selected cf) (config-form-scroll-offset cf)) rows-per-field)
+                    (- inner-h rows-per-field))
+             (incf (config-form-scroll-offset cf)))))
+       t)
+      ;; Enter - next field or submit if on last
+      ((and (key-event-code key) (eq (key-event-code key) :enter))
+       (if (>= (config-form-selected cf) (1- n-fields))
+           (setf (config-form-submitted cf) :submit)
+           (progn
+             (incf (config-form-selected cf))
+             (let ((inner-h (- (widget-height cf) 2))
+                   (rows-per-field 3))
+               (when (> (* (- (config-form-selected cf) (config-form-scroll-offset cf)) rows-per-field)
+                        (- inner-h rows-per-field))
+                 (incf (config-form-scroll-offset cf))))))
+       t)
+      ;; Backspace - delete char from current field
+      ((and (key-event-code key) (eq (key-event-code key) :backspace))
+       (let ((val (config-form-field-value cf (config-form-selected cf))))
+         (when (> (length val) 0)
+           (config-form-set-value cf (config-form-selected cf)
+                                  (subseq val 0 (1- (length val))))))
+       t)
+      ;; Printable character - append to current field
+      ((and (key-event-char key) (not (key-event-ctrl-p key)))
+       (let ((val (config-form-field-value cf (config-form-selected cf))))
+         (config-form-set-value cf (config-form-selected cf)
+                                (concatenate 'string val (string (key-event-char key)))))
+       t)
+      ;; Ctrl+U - clear field
+      ((and (key-event-char key) (key-event-ctrl-p key)
+            (char= (key-event-char key) #\u))
+       (config-form-set-value cf (config-form-selected cf) "")
+       t)
+      (t nil))))

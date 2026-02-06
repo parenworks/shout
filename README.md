@@ -28,6 +28,7 @@ A pure ANSI terminal user interface for [Multiposter](https://codeberg.org/shinm
 - **CLOS architecture** — fully extensible widget system
 - **Live preview** — dynamic per-client character counts with colour-coded progress bars (Bluesky counts text only, Mastodon counts text + tags); panel resizes as clients are toggled
 - **Client management** — toggle which platforms to post to; shows all known multiposter client types including unconfigured ones
+- **In-app configuration** — press Enter on an unconfigured client to set it up with a guided form
 - **Tag management** — persistent saved tags with per-post enable/disable
 - **Demo mode** — `--demo` flag to explore the TUI with all client types, no real posting
 - **Context-sensitive help** — keybindings update based on focused panel
@@ -80,6 +81,9 @@ SHOUT reads your existing Multiposter configuration from `~/.config/multiposter/
 | `a` | Add new tag (in Tags panel) |
 | `d` | Delete selected tag (in Tags panel) |
 | `↑↓` | Navigate lists |
+| `Enter` | Configure selected client (in Clients panel) |
+| `Ctrl+G` | Cancel configuration form |
+| `Ctrl+U` | Clear current field (in config form) |
 | `Ctrl+A` / `Ctrl+E` | Beginning / end of line (in Compose) |
 | `Ctrl+K` | Kill to end of line (in Compose) |
 

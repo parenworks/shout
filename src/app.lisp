@@ -21,6 +21,11 @@
    (preview-panel :accessor app-preview-panel :initform nil)
    (progress-bars :accessor app-progress-bars :initform nil)
    (help-bar :accessor app-help-bar :initform nil)
+   ;; Config form (modal overlay)
+   (config-form :accessor app-config-form :initform nil
+                :documentation "Active config form, or NIL")
+   (config-type :accessor app-config-type :initform nil
+                :documentation "Type name being configured")
    ;; State
    (clients :accessor app-clients :initform nil
             :documentation "List of client-info objects"))
@@ -371,23 +376,164 @@ For unconfigured items like 'discord:unconfigured', extract the prefix."
 ;;; Main event loop
 ;;; ============================================================
 
+(defun config-form-validate (form fields)
+  "Return list of missing required field labels, or NIL if all OK."
+  (loop for field in fields
+        for key = (first field)
+        for optional-p = (fourth field)
+        unless (or optional-p
+                   (> (length (gethash key (config-form-values form) "")) 0))
+        collect (second field)))
+
+(defun open-config-form (app type-name)
+  "Open a config form overlay for the given client type."
+  (let ((fields (client-setup-fields type-name)))
+    (unless fields
+      (add-status (app-status-display app) "✗" :error
+                  (format nil "No setup fields for ~A" type-name))
+      (return-from open-config-form))
+    (let ((form (make-instance 'config-form
+                               :title (format nil "Configure ~A" type-name)
+                               :client-type type-name
+                               :fields fields))
+          (ca (app-compose-area app)))
+      (setf (widget-x form) (widget-x ca)
+            (widget-y form) (widget-y ca)
+            (widget-width form) (widget-width ca)
+            (widget-height form) (widget-height ca)
+            (widget-visible form) t
+            (widget-focused form) t)
+      (add-widget (app-screen app) form :focusable nil)
+      (setf (app-config-form app) form
+            (app-config-type app) type-name)
+      (setf (shout.layout:screen-dirty (app-screen app)) t))))
+
+(defun close-config-form (app)
+  "Close the config form overlay."
+  (when (app-config-form app)
+    (remove-widget (app-screen app) (app-config-form app))
+    (setf (app-config-form app) nil
+          (app-config-type app) nil)
+    (setf (shout.layout:screen-dirty (app-screen app)) t)))
+
+(defun handle-config-key (app key)
+  "Handle a key event while the config form is active.
+Returns :handled, :quit, or NIL."
+  (let ((form (app-config-form app))
+        (type-name (app-config-type app)))
+    ;; Ctrl+Q - quit app
+    (when (and (key-event-char key) (key-event-ctrl-p key)
+              (char= (key-event-char key) #\q))
+      (close-config-form app)
+      (return-from handle-config-key :quit))
+    ;; Ctrl+G - cancel config
+    (when (and (key-event-char key) (key-event-ctrl-p key)
+              (char= (key-event-char key) #\g))
+      (close-config-form app)
+      (return-from handle-config-key :handled))
+    ;; Pass to form
+    (handle-key form key)
+    (setf (shout.layout:screen-dirty (app-screen app)) t)
+    ;; Check form state
+    (case (config-form-submitted form)
+      (:cancel
+       (close-config-form app))
+      (:submit
+       (let* ((fields (config-form-fields form))
+              (missing (config-form-validate form fields)))
+         (cond
+           (missing
+            (add-status (app-status-display app) "✗" :error
+                        (format nil "Missing: ~{~A~^, ~}" missing))
+            (setf (config-form-submitted form) nil))
+           (t
+            (let* ((result (config-form-result form))
+                   (client-name (or (cdr (assoc :name result)) type-name))
+                   (new-ci (handler-case
+                               (add-client-to-config type-name client-name result)
+                             (error (e)
+                               (add-status (app-status-display app) "✗" :error
+                                           (format nil "Error: ~A" e))
+                               nil))))
+              (close-config-form app)
+              (when new-ci
+                (add-status (app-status-display app) "✓" :success
+                            (format nil "~A configured!" type-name))
+                (push new-ci (app-clients app))
+                (rebuild-client-list app))))))))
+    :handled))
+
+(defun try-configure-selected-client (app)
+  "If the selected client in the checkbox list is unconfigured, open config form."
+  (let* ((cl (app-client-list app))
+         (items (checkbox-list-items cl))
+         (sel (checkbox-list-selected cl))
+         (item-key (car (nth sel items))))
+    (when (and item-key (search ":unconfigured" item-key))
+      (let ((type-name (subseq item-key 0 (position #\: item-key))))
+        (open-config-form app type-name)))))
+
+(defun rebuild-client-list (app)
+  "Rebuild the checkbox list with current configured + unconfigured clients."
+  (let ((all-items nil)
+        (configured-type-names (mapcar #'client-type-name (app-clients app))))
+    (dolist (ci (app-clients app))
+      (push (cons (client-name ci)
+                  (format nil "~A (~A)~:[~; ✗~]"
+                          (client-name ci)
+                          (client-type-name ci)
+                          (not (client-ready-p ci))))
+            all-items))
+    (dolist (ct (get-available-client-types))
+      (let ((type-name (car ct))
+            (display (cdr ct)))
+        (unless (find type-name configured-type-names :test #'string-equal)
+          (push (cons (format nil "~A:unconfigured" type-name)
+                      (format nil "~A (not configured)" display))
+                all-items))))
+    (let ((old-cl (app-client-list app)))
+      (setf (checkbox-list-items old-cl) (nreverse all-items))
+      (setf (checkbox-list-selected old-cl) 0)
+      (setf (checkbox-list-scroll-offset old-cl) 0)
+      ;; Check the new client by default
+      (dolist (ci (app-clients app))
+        (setf (gethash (client-name ci) (checkbox-list-checked old-cl)) t)))))
+
 (defmethod run-app ((app shout-app))
   (setf (app-running app) t)
   (loop while (app-running app) do
     (refresh-layout app)
+    ;; Update config form position if active
+    (when (app-config-form app)
+      (let ((ca (app-compose-area app))
+            (form (app-config-form app)))
+        (setf (widget-x form) (widget-x ca)
+              (widget-y form) (widget-y ca)
+              (widget-width form) (widget-width ca)
+              (widget-height form) (widget-height ca))))
     (render-screen (app-screen app))
     (refresh-preview app)
     (force-output *terminal-io*)
     (let ((key (read-key)))
       (when key
-        (let ((result (dispatch-key (app-screen app) key)))
-          (case result
-            (:quit
-             (setf (app-running app) nil))
-            (:post
-             (do-post app))
-            (t
-             (setf (shout.layout:screen-dirty (app-screen app)) t))))))))
+        (if (app-config-form app)
+            ;; Config form is active: route all keys to it
+            (let ((result (handle-config-key app key)))
+              (case result
+                (:quit (setf (app-running app) nil))
+                (t (setf (shout.layout:screen-dirty (app-screen app)) t))))
+            ;; Normal mode
+            (let ((result (dispatch-key (app-screen app) key)))
+              (case result
+                (:quit
+                 (setf (app-running app) nil))
+                (:post
+                 (do-post app))
+                (:configure
+                 (try-configure-selected-client app)
+                 (setf (shout.layout:screen-dirty (app-screen app)) t))
+                (t
+                 (setf (shout.layout:screen-dirty (app-screen app)) t)))))))))
 
 (defmethod teardown-app ((app shout-app))
   ;; Save tags for next session
@@ -446,6 +592,8 @@ For unconfigured items like 'discord:unconfigured', extract the prefix."
   (format t "  a                Add new tag~%")
   (format t "  d                Delete selected tag~%")
   (format t "  ↑↓               Navigate lists~%")
+  (format t "  Enter            Configure selected client~%")
+  (format t "  C-g              Cancel configuration~%")
   (format t "~%")
   (format t "Configuration:~%")
   (format t "  Tags saved to ~~/.config/shout/tags.lisp~%")
