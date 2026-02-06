@@ -1,0 +1,14 @@
+# SBCL compiled files
+*.fasl
+*.lx64fsl
+
+# Built executable
+/shout
+
+# ASDF cache
+.cache/
+
+# Editor backups
+*~
+\#*\#
+.*.swp

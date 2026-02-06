@@ -1,0 +1,210 @@
+(in-package #:shout.ansi)
+
+;;; ANSI Escape Sequence Library - CLOS-based
+;;; Direct terminal control without ncurses dependency
+
+(defparameter *escape* (code-char 27))
+
+;;; Color class hierarchy
+
+(defclass color ()
+  ()
+  (:documentation "Base class for terminal colors"))
+
+(defclass indexed-color (color)
+  ((index :initarg :index :accessor color-index :type (integer 0 255)))
+  (:documentation "256-color palette color"))
+
+(defclass rgb-color (color)
+  ((red :initarg :red :accessor color-red :type (integer 0 255))
+   (green :initarg :green :accessor color-green :type (integer 0 255))
+   (blue :initarg :blue :accessor color-blue :type (integer 0 255)))
+  (:documentation "24-bit true color"))
+
+(defclass named-color (indexed-color)
+  ((name :initarg :name :accessor color-name :type keyword))
+  (:documentation "Named color with semantic meaning"))
+
+;;; Color constructors
+
+(defun make-indexed-color (index)
+  (make-instance 'indexed-color :index index))
+
+(defun make-rgb-color (r g b)
+  (make-instance 'rgb-color :red r :green g :blue b))
+
+(defun make-named-color (name index)
+  (make-instance 'named-color :name name :index index))
+
+;;; Standard color palette
+
+(defparameter *color-palette* (make-hash-table :test 'eq))
+
+(defun register-color (name index)
+  (setf (gethash name *color-palette*) (make-named-color name index)))
+
+(defun lookup-color (name-or-index)
+  (etypecase name-or-index
+    (color name-or-index)
+    (keyword (or (gethash name-or-index *color-palette*)
+                 (make-indexed-color 7)))
+    (integer (make-indexed-color name-or-index))))
+
+;; Register standard colors
+(register-color :black 0)
+(register-color :red 1)
+(register-color :green 2)
+(register-color :yellow 3)
+(register-color :blue 4)
+(register-color :magenta 5)
+(register-color :cyan 6)
+(register-color :white 7)
+(register-color :bright-black 8)
+(register-color :bright-red 9)
+(register-color :bright-green 10)
+(register-color :bright-yellow 11)
+(register-color :bright-blue 12)
+(register-color :bright-magenta 13)
+(register-color :bright-cyan 14)
+(register-color :bright-white 15)
+;; Shout-specific semantic colors
+(register-color :success 34)
+(register-color :error 160)
+(register-color :warning 208)
+(register-color :info 75)
+(register-color :muted 245)
+(register-color :accent 39)
+(register-color :posting 214)
+
+;;; Generic functions for color output
+
+(defgeneric emit-fg (color stream)
+  (:documentation "Emit ANSI sequence for foreground color"))
+
+(defgeneric emit-bg (color stream)
+  (:documentation "Emit ANSI sequence for background color"))
+
+(defmethod emit-fg ((color indexed-color) stream)
+  (format stream "~C[38;5;~Dm" *escape* (color-index color)))
+
+(defmethod emit-fg ((color rgb-color) stream)
+  (format stream "~C[38;2;~D;~D;~Dm" *escape*
+          (color-red color) (color-green color) (color-blue color)))
+
+(defmethod emit-bg ((color indexed-color) stream)
+  (format stream "~C[48;5;~Dm" *escape* (color-index color)))
+
+(defmethod emit-bg ((color rgb-color) stream)
+  (format stream "~C[48;2;~D;~D;~Dm" *escape*
+          (color-red color) (color-green color) (color-blue color)))
+
+;;; Style class
+
+(defclass text-style ()
+  ((foreground :initarg :fg :accessor style-fg :initform nil)
+   (background :initarg :bg :accessor style-bg :initform nil)
+   (bold-p :initarg :bold :accessor style-bold-p :initform nil)
+   (dim-p :initarg :dim :accessor style-dim-p :initform nil)
+   (italic-p :initarg :italic :accessor style-italic-p :initform nil)
+   (underline-p :initarg :underline :accessor style-underline-p :initform nil)
+   (inverse-p :initarg :inverse :accessor style-inverse-p :initform nil))
+  (:documentation "Text styling attributes"))
+
+(defun make-style (&key fg bg bold dim italic underline inverse)
+  (make-instance 'text-style
+                 :fg (when fg (lookup-color fg))
+                 :bg (when bg (lookup-color bg))
+                 :bold bold :dim dim :italic italic
+                 :underline underline :inverse inverse))
+
+(defgeneric emit-style (style stream)
+  (:documentation "Emit ANSI sequences for a style"))
+
+(defmethod emit-style ((style text-style) stream)
+  (when (style-bold-p style) (format stream "~C[1m" *escape*))
+  (when (style-dim-p style) (format stream "~C[2m" *escape*))
+  (when (style-italic-p style) (format stream "~C[3m" *escape*))
+  (when (style-underline-p style) (format stream "~C[4m" *escape*))
+  (when (style-inverse-p style) (format stream "~C[7m" *escape*))
+  (when (style-fg style) (emit-fg (style-fg style) stream))
+  (when (style-bg style) (emit-bg (style-bg style) stream)))
+
+;;; Convenience functions - write directly to *terminal-io*
+
+(defun cursor-to (row col)
+  (format *terminal-io* "~C[~D;~DH" *escape* row col))
+
+(defun cursor-home ()
+  (format *terminal-io* "~C[H" *escape*))
+
+(defun cursor-hide ()
+  (format *terminal-io* "~C[?25l" *escape*))
+
+(defun cursor-show ()
+  (format *terminal-io* "~C[?25h" *escape*))
+
+(defun clear-screen ()
+  (format *terminal-io* "~C[2J" *escape*))
+
+(defun begin-sync-update ()
+  (format *terminal-io* "~C[?2026h" *escape*))
+
+(defun end-sync-update ()
+  (format *terminal-io* "~C[?2026l" *escape*))
+
+(defun clear-line ()
+  (format *terminal-io* "~C[2K" *escape*))
+
+(defun clear-to-end ()
+  (format *terminal-io* "~C[K" *escape*))
+
+(defun reset ()
+  (format *terminal-io* "~C[0m" *escape*))
+
+(defun cursor-up (&optional (n 1))
+  (format *terminal-io* "~C[~DA" *escape* n))
+
+(defun cursor-down (&optional (n 1))
+  (format *terminal-io* "~C[~DB" *escape* n))
+
+(defun cursor-forward (&optional (n 1))
+  (format *terminal-io* "~C[~DC" *escape* n))
+
+(defun cursor-back (&optional (n 1))
+  (format *terminal-io* "~C[~DD" *escape* n))
+
+(defun fg (color)
+  (emit-fg (lookup-color color) *terminal-io*))
+
+(defun bg (color)
+  (emit-bg (lookup-color color) *terminal-io*))
+
+(defun fg-rgb (r g b)
+  (emit-fg (make-rgb-color r g b) *terminal-io*))
+
+(defun bg-rgb (r g b)
+  (emit-bg (make-rgb-color r g b) *terminal-io*))
+
+(defun bold () (format *terminal-io* "~C[1m" *escape*))
+(defun dim () (format *terminal-io* "~C[2m" *escape*))
+(defun italic () (format *terminal-io* "~C[3m" *escape*))
+(defun underline () (format *terminal-io* "~C[4m" *escape*))
+(defun inverse () (format *terminal-io* "~C[7m" *escape*))
+
+(defun color-code (name)
+  (etypecase name
+    (integer name)
+    (keyword (let ((c (gethash name *color-palette*)))
+               (if c (color-index c) 7)))))
+
+(defmacro with-style ((&key fg bg bold dim italic underline inverse) &body body)
+  `(progn
+     ,@(when bold '((bold)))
+     ,@(when dim '((dim)))
+     ,@(when italic '((italic)))
+     ,@(when underline '((underline)))
+     ,@(when inverse '((inverse)))
+     ,@(when fg `((fg ,fg)))
+     ,@(when bg `((bg ,bg)))
+     ,@body
+     (reset)))
