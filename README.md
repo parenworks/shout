@@ -12,7 +12,7 @@ A pure ANSI terminal user interface for [Multiposter](https://codeberg.org/shinm
 │ ○ Git (not configured) ││                                            │
 │ ○ WebDAV (not config)  ││                                            │
 │ ○ Tumblr (not config)  ││                                            │
-├─ Tags ─────────────────┤├─ Preview ───────────────────────────────────┤
+├─ Tags ─────────────────┤├─ Preview ──────────────────────────────────┤
 │ ● #NowPlaying          ││ ████████████░░░░░░░░ 142/300 bluesky       │
 │ ○ #AsteroidRadio       ││ ████████░░░░░░░░░░░░ 155/500 mastodon      │
 │ + add tag...           ││                                            │
