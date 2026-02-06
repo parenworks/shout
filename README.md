@@ -6,66 +6,80 @@ A pure ANSI terminal user interface for [Multiposter](https://github.com/Shinmer
 
 ```
 ╭─ Clients ──────────────╮╭─ Compose ──────────────────────────────────╮
-│ ● Bluesky              ││                                            │
-│ ● Mastodon             ││ Oye Belters 🛰️🔧 Morning Drift is         │
-│ ○ Discord              ││ online — soft light on the console...      │
-│                        ││                                            │
-├─ Tags ─────────────────┤│                                            │
-│ #NowPlaying            │├─ Preview ───────────────────────────────────┤
-│ #AsteroidRadio         ││ ████████████░░░░░░░░ 187/300 Bluesky       │
-│ + add tag...           ││ ████████░░░░░░░░░░░░ 187/500 Mastodon      │
-├─ Status ───────────────┤│                                            │
-│ ✓ 2/2 clients ready    ││                                            │
-╰────────────────────────╯╰────────────────────────────────────────────╯
-╭─ Tab: next │ Space: toggle │ C-Enter: post │ C-q: quit ─────────────╯
+│ ● bluesky (bluesky)    ││                                            │
+│ ● mastodon (mastodon)  ││ Oye Belters 🛰️🔧 Morning Drift is         │
+│ ○ Discord (not config) ││ online — soft light on the console...      │
+│ ○ Git (not configured) ││                                            │
+│ ○ WebDAV (not config)  ││                                            │
+│ ○ Tumblr (not config)  ││                                            │
+├─ Tags ─────────────────┤├─ Preview ───────────────────────────────────┤
+│ ● #NowPlaying          ││ ████████████░░░░░░░░ 142/300 bluesky       │
+│ ○ #AsteroidRadio       ││ ████████░░░░░░░░░░░░ 155/500 mastodon      │
+│ + add tag...           ││                                            │
+├─ Status ───────────────┤╰────────────────────────────────────────────╯
+│ ✓ 2/2 clients ready    │
+╰────────────────────────╯
+ Tab: next │ S-Tab: prev │ F5: post │ C-s: post │ C-q: quit
 ```
 
 ## Features
 
 - **Pure ANSI** — no ncurses dependency, just escape sequences
 - **CLOS architecture** — fully extensible widget system
-- **Live preview** — character counts per platform with colour-coded progress bars
-- **Client management** — toggle which platforms to post to
-- **Tag management** — add/remove hashtags with a dedicated panel
+- **Live preview** — per-client character counts with colour-coded progress bars (Bluesky counts text only, Mastodon counts text + tags)
+- **Client management** — toggle which platforms to post to; shows all known multiposter client types
+- **Tag management** — persistent saved tags with per-post enable/disable
 - **Context-sensitive help** — keybindings update based on focused panel
 - **Posting progress** — animated spinner with success/failure per client
+- **Auto-clear** — compose area and tags reset after successful post
+- **UTF-8 support** — emoji and multi-byte characters in compose
 
 ## Requirements
 
-- SBCL (Steel Bank Common Lisp)
-- [Multiposter](https://github.com/Shinmera/multiposter) with configured clients
+- [SBCL](http://www.sbcl.org/) (Steel Bank Common Lisp)
+- [Quicklisp](https://www.quicklisp.org/)
+- [Multiposter](https://github.com/Shinmera/multiposter) source (with at least one configured client)
 - A terminal with Unicode and 256-colour support
 
-## Building
+## Building & Installing
 
 ```bash
-sbcl --eval '(require :asdf)' \
-     --eval '(load "~/quicklisp/setup.lisp")' \
-     --eval '(push #P"/path/to/shout/" asdf:*central-registry*)' \
-     --eval '(push #P"/path/to/multiposter/" asdf:*central-registry*)' \
-     --eval '(asdf:make :shout)' \
-     --quit
+git clone https://github.com/parenworks/shout.git
+cd shout
+
+# Multiposter source must be available in one of:
+#   ../multiposter/
+#   ~/SourceCode/multiposter/
+#   ~/common-lisp/multiposter/
+#   ~/quicklisp/local-projects/multiposter/
+
+make build
+sudo make install   # installs to /usr/local/bin/shout
 ```
 
 ## Usage
 
 ```bash
-./shout
+shout              # launch the TUI
+shout --help       # show usage and keybindings
+shout --version    # show version
 ```
 
-SHOUT reads your existing Multiposter configuration from `~/.config/multiposter/multiposter.lisp`.
+SHOUT reads your existing Multiposter configuration from `~/.config/multiposter/multiposter.lisp`. Tags are saved to `~/.config/shout/tags.lisp`.
 
 ## Keybindings
 
 | Key | Action |
 |-----|--------|
-| `Tab` | Cycle focus between panels |
-| `Ctrl+Enter` | Post to selected clients |
+| `Tab` / `S-Tab` | Cycle focus between panels |
+| `F5` / `Ctrl+S` | Post to selected clients |
 | `Ctrl+Q` | Quit |
-| `Space` | Toggle client (in Clients panel) |
-| `a` | Add tag (in Tags panel) |
-| `d` | Delete tag (in Tags panel) |
+| `Space` | Toggle item (clients or tags) |
+| `a` | Add new tag (in Tags panel) |
+| `d` | Delete selected tag (in Tags panel) |
 | `↑↓` | Navigate lists |
+| `Ctrl+A` / `Ctrl+E` | Beginning / end of line (in Compose) |
+| `Ctrl+K` | Kill to end of line (in Compose) |
 
 ## License
 
