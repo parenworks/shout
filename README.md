@@ -2,7 +2,7 @@
 
 **Social Herald Over Unix Terminals**
 
-A pure ANSI terminal user interface for [Multiposter](https://github.com/Shinmera/multiposter) — compose and broadcast posts to multiple social media platforms from your terminal.
+A pure ANSI terminal user interface for [Multiposter](https://codeberg.org/shinmera/multiposter) — compose and broadcast posts to multiple social media platforms from your terminal.
 
 ```
 ╭─ Clients ──────────────╮╭─ Compose ──────────────────────────────────╮
@@ -38,7 +38,7 @@ A pure ANSI terminal user interface for [Multiposter](https://github.com/Shinmer
 
 - [SBCL](http://www.sbcl.org/) (Steel Bank Common Lisp)
 - [Quicklisp](https://www.quicklisp.org/)
-- [Multiposter](https://github.com/Shinmera/multiposter) source (with at least one configured client)
+- [Multiposter](https://codeberg.org/shinmera/multiposter) source (with at least one configured client)
 - A terminal with Unicode and 256-colour support
 
 ## Building & Installing
