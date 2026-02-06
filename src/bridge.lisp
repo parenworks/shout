@@ -190,6 +190,10 @@
     ((string-equal type-name "bluesky") 300)
     ((string-equal type-name "mastodon") 500)
     ((string-equal type-name "discord") 2000)
+    ((string-equal type-name "tumblr") 4096)
+    ((string-equal type-name "cohost") 3000)
+    ((string-equal type-name "lichat") 1024)
+    ((string-equal type-name "pixiv") 140)
     (t nil)))
 
 (defun client-tags-in-body-p (type-name)

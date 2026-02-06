@@ -4,6 +4,7 @@
 ;;; Main application entry point and screen composition
 
 (defparameter *version* "0.1.0")
+(defvar *demo-mode* nil "When T, use fake clients for all known types")
 
 ;;; ============================================================
 ;;; Application class
@@ -47,10 +48,35 @@
 (defgeneric refresh-preview (app)
   (:documentation "Update the preview panel with current char counts"))
 
+(defun item-type-name (item-key clients)
+  "Extract the client type name from a checkbox item key.
+For configured clients, look up the type from app-clients.
+For unconfigured items like 'discord:unconfigured', extract the prefix."
+  (let ((ci (find item-key clients :key #'client-name :test #'string=)))
+    (if ci
+        (client-type-name ci)
+        ;; Unconfigured: key is 'typename:unconfigured'
+        (let ((pos (position #\: item-key)))
+          (if pos (subseq item-key 0 pos) item-key)))))
+
+(defun make-demo-clients ()
+  "Create fake client-info objects for all known client types."
+  (loop for (type-name . display) in (get-available-client-types)
+        for i from 1
+        collect (make-instance 'client-info
+                               :name (format nil "demo-~A" type-name)
+                               :type-name type-name
+                               :enabled-p t
+                               :ready-p t
+                               :client-object nil)))
+
 (defmethod setup-app ((app shout-app))
-  ;; Load multiposter config
-  (load-multiposter-config)
-  (setf (app-clients app) (get-configured-clients))
+  ;; Load multiposter config (or demo clients)
+  (if *demo-mode*
+      (setf (app-clients app) (make-demo-clients))
+      (progn
+        (load-multiposter-config)
+        (setf (app-clients app) (get-configured-clients))))
 
   ;; Create screen
   (setf (app-screen app) (make-instance 'screen))
@@ -161,8 +187,12 @@
          (left-remaining (- usable-h client-h))
          (tag-h (max 4 (min 8 (floor left-remaining 2))))
          (status-h (max 3 (- usable-h client-h tag-h)))
-         ;; Right column: preview 4 rows at bottom, compose fills rest
-         (preview-h 4)
+         ;; Right column: preview height based on checked clients
+         (checked (checkbox-list-checked (app-client-list app)))
+         (n-preview-clients (loop for item in (checkbox-list-items (app-client-list app))
+                                  when (gethash (car item) checked)
+                                  count t))
+         (preview-h (+ 2 (max 1 n-preview-clients)))
          (compose-h (- usable-h preview-h)))
     (setf (shout.layout:screen-width s) tw
           (shout.layout:screen-height s) th)
@@ -223,42 +253,68 @@
     (clear-region inner-x inner-y inner-w inner-h)
     ;; Show char counts for each checked client
     (let ((checked (checkbox-list-checked (app-client-list app))))
-      (dolist (ci (app-clients app))
-        (when (and (gethash (client-name ci) checked)
-                   (< row inner-h))
-          (let ((limit (client-char-limit (client-type-name ci))))
-            (when limit
-              ;; Per-client total: Bluesky doesn't count tags, others do
-              (let* ((total-len (if (client-tags-in-body-p (client-type-name ci))
-                                    (+ text-len tag-len)
-                                    text-len))
-                     (bar-w (max 8 (- inner-w 20)))
-                     (ratio (min 1.0 (/ total-len (max 1 limit))))
-                     (filled (round (* bar-w ratio)))
-                     (empty (- bar-w filled)))
-                (cursor-to (+ inner-y row) inner-x)
-                (cond
-                  ((> ratio 0.9) (fg :error))
-                  ((> ratio 0.7) (fg :warning))
-                  (t (fg :accent)))
-                (loop repeat (max 0 filled) do (write-string "█" *terminal-io*))
-                (fg :muted)
-                (loop repeat (max 0 empty) do (write-string "░" *terminal-io*))
-                ;; Count
-                (write-char #\Space *terminal-io*)
-                (cond
-                  ((> total-len limit) (fg :error))
-                  ((> ratio 0.9) (fg :warning))
-                  (t (fg :white)))
-                (format *terminal-io* "~D/~D " total-len limit)
-                (fg :muted)
-                (write-string (client-name ci) *terminal-io*)
-                (reset))
-              (incf row))))))))
+      (dolist (item (checkbox-list-items (app-client-list app)))
+        (let ((item-key (car item)))
+          (when (and (gethash item-key checked)
+                     (< row inner-h))
+            (let* ((type-name (item-type-name item-key (app-clients app)))
+                   (limit (client-char-limit type-name))
+                   (total-len (if (client-tags-in-body-p type-name)
+                                  (+ text-len tag-len)
+                                  text-len)))
+            (cursor-to (+ inner-y row) inner-x)
+            (if limit
+                ;; Client with char limit: show progress bar
+                (let* ((bar-w (max 8 (- inner-w 20)))
+                       (ratio (min 1.0 (/ total-len (max 1 limit))))
+                       (filled (round (* bar-w ratio)))
+                       (empty (- bar-w filled)))
+                  (cond
+                    ((> ratio 0.9) (fg :error))
+                    ((> ratio 0.7) (fg :warning))
+                    (t (fg :accent)))
+                  (loop repeat (max 0 filled) do (write-string "█" *terminal-io*))
+                  (fg :muted)
+                  (loop repeat (max 0 empty) do (write-string "░" *terminal-io*))
+                  (write-char #\Space *terminal-io*)
+                  (cond
+                    ((> total-len limit) (fg :error))
+                    ((> ratio 0.9) (fg :warning))
+                    (t (fg :white)))
+                  (format *terminal-io* "~D/~D " total-len limit))
+                ;; Client without char limit: show count + no limit
+                (progn
+                  (fg :success)
+                  (write-string "✓ " *terminal-io*)
+                  (fg :white)
+                  (format *terminal-io* "~D chars " total-len)
+                  (fg :muted)
+                  (write-string "no limit " *terminal-io*)))
+            (fg :muted)
+            (write-string item-key *terminal-io*)
+            (reset)
+            (incf row))))))))
 
 ;;; ============================================================
 ;;; Posting
 ;;; ============================================================
+
+(defun demo-post (app selected)
+  "Simulate posting to selected clients with fake delays and results."
+  (dolist (name selected)
+    (add-status (app-status-display app)
+                (string (next-spinner-frame)) :posting
+                (format nil "Posting to ~A..." name))
+    (setf (shout.layout:screen-dirty (app-screen app)) t)
+    (render-screen (app-screen app))
+    (force-output *terminal-io*)
+    (sleep 0.5)
+    (add-status (app-status-display app)
+                "✓" :success
+                (format nil "~A: https://example.com/~A/12345" name name))
+    (setf (shout.layout:screen-dirty (app-screen app)) t)
+    (render-screen (app-screen app))
+    (force-output *terminal-io*)))
 
 (defmethod do-post ((app shout-app))
   (let* ((text (text-area-content (app-compose-area app)))
@@ -273,41 +329,43 @@
       (setf (shout.layout:screen-dirty (app-screen app)) t)
       (render-screen (app-screen app))
 
-      (let ((results (post-to-clients text tags selected
-                       :callback (lambda (event client-name &optional detail)
-                                   (case event
-                                     (:posting
-                                      (add-status (app-status-display app)
-                                                  (string (next-spinner-frame)) :posting
-                                                  (format nil "Posting to ~A..." client-name))
-                                      (setf (shout.layout:screen-dirty (app-screen app)) t)
-                                      (render-screen (app-screen app)))
-                                     (:success
-                                      (add-status (app-status-display app)
-                                                  "✓" :success
-                                                  (format nil "~A: ~A" client-name
-                                                          (or detail "posted")))
-                                      (setf (shout.layout:screen-dirty (app-screen app)) t)
-                                      (render-screen (app-screen app)))
-                                     (:error
-                                      (add-status (app-status-display app)
-                                                  "✗" :error
-                                                  (format nil "~A: ~A" client-name
-                                                          (or detail "failed")))
-                                      (setf (shout.layout:screen-dirty (app-screen app)) t)
-                                      (render-screen (app-screen app))))))))
-        (declare (ignore results))
-        ;; Final status
-        (add-status (app-status-display app) "✓" :success "Done!")
-        ;; Clear compose area for next post
-        (setf (text-area-content (app-compose-area app)) "")
-        (setf (text-area-cursor-row (app-compose-area app)) 0)
-        (setf (text-area-cursor-col (app-compose-area app)) 0)
-        (setf (text-area-scroll-offset (app-compose-area app)) 0)
-        ;; Disable all tags for next post
-        (dolist (tag (tag-list-tags (app-tag-list app)))
-          (setf (gethash tag (tag-list-enabled (app-tag-list app))) nil))
-        (setf (shout.layout:screen-dirty (app-screen app)) t)))))
+      (if *demo-mode*
+          (demo-post app selected)
+          (let ((results (post-to-clients text tags selected
+                           :callback (lambda (event client-name &optional detail)
+                                       (case event
+                                         (:posting
+                                          (add-status (app-status-display app)
+                                                      (string (next-spinner-frame)) :posting
+                                                      (format nil "Posting to ~A..." client-name))
+                                          (setf (shout.layout:screen-dirty (app-screen app)) t)
+                                          (render-screen (app-screen app)))
+                                         (:success
+                                          (add-status (app-status-display app)
+                                                      "✓" :success
+                                                      (format nil "~A: ~A" client-name
+                                                              (or detail "posted")))
+                                          (setf (shout.layout:screen-dirty (app-screen app)) t)
+                                          (render-screen (app-screen app)))
+                                         (:error
+                                          (add-status (app-status-display app)
+                                                      "✗" :error
+                                                      (format nil "~A: ~A" client-name
+                                                              (or detail "failed")))
+                                          (setf (shout.layout:screen-dirty (app-screen app)) t)
+                                          (render-screen (app-screen app))))))))
+            (declare (ignore results))))
+      ;; Final status
+      (add-status (app-status-display app) "✓" :success "Done!")
+      ;; Clear compose area for next post
+      (setf (text-area-content (app-compose-area app)) "")
+      (setf (text-area-cursor-row (app-compose-area app)) 0)
+      (setf (text-area-cursor-col (app-compose-area app)) 0)
+      (setf (text-area-scroll-offset (app-compose-area app)) 0)
+      ;; Disable all tags for next post
+      (dolist (tag (tag-list-tags (app-tag-list app)))
+        (setf (gethash tag (tag-list-enabled (app-tag-list app))) nil))
+      (setf (shout.layout:screen-dirty (app-screen app)) t))))
 
 ;;; ============================================================
 ;;; Main event loop
@@ -316,6 +374,7 @@
 (defmethod run-app ((app shout-app))
   (setf (app-running app) t)
   (loop while (app-running app) do
+    (refresh-layout app)
     (render-screen (app-screen app))
     (refresh-preview app)
     (force-output *terminal-io*)
@@ -377,6 +436,7 @@
   (format t "Options:~%")
   (format t "  -h, --help       Show this help message~%")
   (format t "  -v, --version    Show version~%")
+  (format t "      --demo       Demo mode (fake clients, no real posting)~%")
   (format t "~%")
   (format t "Keybindings:~%")
   (format t "  Tab / S-Tab      Cycle focus between panels~%")
@@ -401,6 +461,8 @@
            (find "-v" args :test #'string=))
        (format t "shout ~A~%" *version*))
       (t
+       (when (find "--demo" args :test #'string=)
+         (setf *demo-mode* t))
        (handler-case
            (shout)
          (error (e)

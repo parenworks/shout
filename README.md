@@ -26,9 +26,10 @@ A pure ANSI terminal user interface for [Multiposter](https://codeberg.org/shinm
 
 - **Pure ANSI** — no ncurses dependency, just escape sequences
 - **CLOS architecture** — fully extensible widget system
-- **Live preview** — per-client character counts with colour-coded progress bars (Bluesky counts text only, Mastodon counts text + tags)
-- **Client management** — toggle which platforms to post to; shows all known multiposter client types
+- **Live preview** — dynamic per-client character counts with colour-coded progress bars (Bluesky counts text only, Mastodon counts text + tags); panel resizes as clients are toggled
+- **Client management** — toggle which platforms to post to; shows all known multiposter client types including unconfigured ones
 - **Tag management** — persistent saved tags with per-post enable/disable
+- **Demo mode** — `--demo` flag to explore the TUI with all client types, no real posting
 - **Context-sensitive help** — keybindings update based on focused panel
 - **Posting progress** — animated spinner with success/failure per client
 - **Auto-clear** — compose area and tags reset after successful post
@@ -63,6 +64,7 @@ sudo make install   # installs to /usr/local/bin/shout
 shout              # launch the TUI
 shout --help       # show usage and keybindings
 shout --version    # show version
+shout --demo       # demo mode: all client types, no real posting
 ```
 
 SHOUT reads your existing Multiposter configuration from `~/.config/multiposter/multiposter.lisp`. Tags are saved to `~/.config/shout/tags.lisp`.
