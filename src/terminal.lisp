@@ -75,14 +75,6 @@ with :input t hangs because CCL doesn't inherit the terminal properly."
 
 ;;; Environment configuration
 
-(defparameter *stty-path*
-  (or (getenv "SHOUT_STTY_PATH")
-      (ignore-errors (probe-file "/run/current-system/sw/bin/stty"))
-      (ignore-errors (probe-file "/bin/stty"))
-      (ignore-errors (probe-file "/usr/bin/stty"))
-      (ignore-errors (probe-file "/usr/local/bin/stty"))
-      "/bin/stty"))
-
 (defparameter *tty-path*
   (or (getenv "SHOUT_TTY_PATH")
       (let ((candidates '("/dev/tty" "/dev/pts/0" "/dev/console" "/dev/tty0")))
@@ -104,6 +96,67 @@ with :input t hangs because CCL doesn't inherit the terminal properly."
           ((and term (search "alacritty" term)) 0.02)
           (t 0.05)))))
 
+;;; Termios FFI - direct terminal control without subprocesses
+;;;
+;;; SBCL: uses sb-posix which provides termios struct accessors
+;;; CCL: uses raw FFI with stack-allocated buffers
+;;;
+;;; Linux x86-64 struct termios (60 bytes) - for CCL raw access:
+;;;   c_iflag  (u32) offset 0
+;;;   c_oflag  (u32) offset 4
+;;;   c_cflag  (u32) offset 8
+;;;   c_lflag  (u32) offset 12
+;;;   c_line   (u8)  offset 16
+;;;   c_cc[32] (u8)  offset 17
+;;;
+;;; Linux struct winsize (8 bytes):
+;;;   ws_row (u16) offset 0
+;;;   ws_col (u16) offset 2
+
+#+sbcl (require :sb-posix)
+
+;; CCL termios constants and helpers
+#+ccl
+(progn
+  (defconstant +termios-size+ 60)
+  (defconstant +winsize-size+ 8)
+  (defconstant +BRKINT+  #x0002)
+  (defconstant +ICRNL+   #x0100)
+  (defconstant +INPCK+   #x0010)
+  (defconstant +ISTRIP+  #x0020)
+  (defconstant +IXON+    #x0400)
+  (defconstant +OPOST+   #x0001)
+  (defconstant +CS8+     #x0030)
+  (defconstant +ECHO+    #x0008)
+  (defconstant +ICANON+  #x0002)
+  (defconstant +IEXTEN+  #x8000)
+  (defconstant +ISIG+    #x0001)
+  (defconstant +VMIN+    6)
+  (defconstant +VTIME+   5)
+  (defconstant +TCSAFLUSH+ 2)
+  (defconstant +TIOCGWINSZ+ #x5413)
+  (defconstant +OFF-IFLAG+ 0)
+  (defconstant +OFF-OFLAG+ 4)
+  (defconstant +OFF-CFLAG+ 8)
+  (defconstant +OFF-LFLAG+ 12)
+  (defconstant +OFF-CC+    17)
+
+  (defun %ccl-get-u32 (buf offset)
+    (logior (ccl::%get-unsigned-byte buf offset)
+            (ash (ccl::%get-unsigned-byte buf (+ offset 1)) 8)
+            (ash (ccl::%get-unsigned-byte buf (+ offset 2)) 16)
+            (ash (ccl::%get-unsigned-byte buf (+ offset 3)) 24)))
+
+  (defun %ccl-set-u32 (buf offset value)
+    (setf (ccl::%get-unsigned-byte buf offset) (logand value #xFF))
+    (setf (ccl::%get-unsigned-byte buf (+ offset 1)) (logand (ash value -8) #xFF))
+    (setf (ccl::%get-unsigned-byte buf (+ offset 2)) (logand (ash value -16) #xFF))
+    (setf (ccl::%get-unsigned-byte buf (+ offset 3)) (logand (ash value -24) #xFF)))
+
+  (defun %ccl-get-u16 (buf offset)
+    (logior (ccl::%get-unsigned-byte buf offset)
+            (ash (ccl::%get-unsigned-byte buf (+ offset 1)) 8))))
+
 ;;; Terminal mode controller class
 
 (defclass terminal-mode ()
@@ -122,57 +175,100 @@ with :input t hangs because CCL doesn't inherit the terminal properly."
 
 (defmethod enable-raw-mode ((mode terminal-mode))
   (unless (terminal-raw-p mode)
-    #+sbcl
     (handler-case
-        (sb-ext:run-program (namestring *stty-path*) '("-echo" "raw" "-icanon")
-                            :input t :output nil :error nil)
+        (progn
+          #+sbcl
+          (let* ((fd (sb-sys:fd-stream-fd sb-sys:*stdin*))
+                 (orig (sb-posix:tcgetattr fd))
+                 (raw (sb-posix:tcgetattr fd)))
+            ;; Save original for restore
+            (setf (terminal-original-settings mode) orig)
+            ;; Modify flags for raw mode
+            (setf (sb-posix:termios-iflag raw)
+                  (logand (sb-posix:termios-iflag raw)
+                          (lognot (logior sb-posix:brkint sb-posix:icrnl
+                                         sb-posix:inpck sb-posix:istrip sb-posix:ixon))))
+            (setf (sb-posix:termios-oflag raw)
+                  (logand (sb-posix:termios-oflag raw)
+                          (lognot sb-posix:opost)))
+            (setf (sb-posix:termios-cflag raw)
+                  (logior (sb-posix:termios-cflag raw) sb-posix:cs8))
+            (setf (sb-posix:termios-lflag raw)
+                  (logand (sb-posix:termios-lflag raw)
+                          (lognot (logior sb-posix:echo sb-posix:icanon
+                                         sb-posix:iexten sb-posix:isig))))
+            ;; VMIN=1 VTIME=0
+            (let ((cc (sb-posix:termios-cc raw)))
+              (setf (aref cc sb-posix:vmin) 1)
+              (setf (aref cc sb-posix:vtime) 0))
+            (sb-posix:tcsetattr fd sb-posix:tcsaflush raw))
+          #+ccl
+          (ccl::%stack-block ((orig +termios-size+)
+                              (raw +termios-size+))
+            (#_tcgetattr 0 orig)
+            ;; Save original settings
+            (let ((saved (make-array +termios-size+ :element-type '(unsigned-byte 8))))
+              (dotimes (i +termios-size+)
+                (setf (aref saved i) (ccl::%get-unsigned-byte orig i)))
+              (setf (terminal-original-settings mode) saved))
+            ;; Copy orig to raw
+            (#_memcpy raw orig +termios-size+)
+            ;; Modify flags for raw mode
+            (%ccl-set-u32 raw +OFF-IFLAG+
+                          (logand (%ccl-get-u32 raw +OFF-IFLAG+)
+                                  (lognot (logior +BRKINT+ +ICRNL+ +INPCK+ +ISTRIP+ +IXON+))))
+            (%ccl-set-u32 raw +OFF-OFLAG+
+                          (logand (%ccl-get-u32 raw +OFF-OFLAG+)
+                                  (lognot +OPOST+)))
+            (%ccl-set-u32 raw +OFF-CFLAG+
+                          (logior (%ccl-get-u32 raw +OFF-CFLAG+) +CS8+))
+            (%ccl-set-u32 raw +OFF-LFLAG+
+                          (logand (%ccl-get-u32 raw +OFF-LFLAG+)
+                                  (lognot (logior +ECHO+ +ICANON+ +IEXTEN+ +ISIG+))))
+            (setf (ccl::%get-unsigned-byte raw (+ +OFF-CC+ +VMIN+)) 1)
+            (setf (ccl::%get-unsigned-byte raw (+ +OFF-CC+ +VTIME+)) 0)
+            (#_tcsetattr 0 +TCSAFLUSH+ raw))
+          (setf (terminal-raw-p mode) t))
       (error (e)
-        (handler-case
-            (sb-ext:run-program "sh" (list "-c" "stty -echo raw -icanon")
-                                :input t :output nil :error nil)
-          (error (e2)
-            (warn "Failed to enable raw mode: ~A / ~A" e e2)))))
-    #+ccl
-    (run-shell-command (format nil "~A -echo raw -icanon </dev/tty" (namestring *stty-path*)))
-    (setf (terminal-raw-p mode) t)))
+        (warn "Failed to enable raw mode via FFI: ~A" e)))))
 
 (defmethod disable-raw-mode ((mode terminal-mode))
   (when (terminal-raw-p mode)
-    #+sbcl
     (handler-case
-        (sb-ext:run-program (namestring *stty-path*) '("echo" "-raw" "icanon")
-                            :input t :output nil :error nil)
+        (let ((saved (terminal-original-settings mode)))
+          (when saved
+            #+sbcl
+            (sb-posix:tcsetattr (sb-sys:fd-stream-fd sb-sys:*stdin*)
+                                sb-posix:tcsaflush saved)
+            #+ccl
+            (ccl::%stack-block ((buf +termios-size+))
+              (dotimes (i +termios-size+)
+                (setf (ccl::%get-unsigned-byte buf i) (aref saved i)))
+              (#_tcsetattr 0 +TCSAFLUSH+ buf))))
       (error (e)
-        (handler-case
-            (sb-ext:run-program "sh" (list "-c" "stty echo -raw icanon")
-                                :input t :output nil :error nil)
-          (error (e2)
-            (declare (ignore e2))
-            (warn "Failed to disable raw mode: ~A" e)))))
-    #+ccl
-    (run-shell-command (format nil "~A echo -raw icanon </dev/tty" (namestring *stty-path*)))
+        (warn "Failed to disable raw mode via FFI: ~A" e)))
     (setf (terminal-raw-p mode) nil)))
 
 (defmethod query-size ((mode terminal-mode))
   (declare (ignore mode))
   (handler-case
-      (let* ((size-str
-               #+sbcl
-               (with-output-to-string (s)
-                 (sb-ext:run-program (namestring *stty-path*) '("size")
-                                     :input t :output s :error nil))
-               #+ccl
-               (with-output-to-string (s)
-                 (let ((proc (ccl:run-program "sh"
-                              (list "-c" (format nil "~A size </dev/tty" (namestring *stty-path*)))
-                              :input nil :output :stream :error nil :wait nil)))
-                   (loop for line = (read-line (ccl:external-process-output-stream proc) nil nil)
-                         while line do (write-string line s))
-                   (ccl::external-process-wait proc))))
-             (parts (cl-ppcre:split "\\s+" (string-trim '(#\Newline #\Space) size-str))))
-        (when (= (length parts) 2)
-          (list (parse-integer (second parts))
-                (parse-integer (first parts)))))
+      (progn
+        #+sbcl
+        (let ((buf (make-array 8 :element-type '(unsigned-byte 8) :initial-element 0)))
+          (sb-sys:with-pinned-objects (buf)
+            (sb-posix:ioctl (sb-sys:fd-stream-fd sb-sys:*stdin*)
+                            #x5413 (sb-sys:vector-sap buf))
+            (let ((rows (logior (aref buf 0) (ash (aref buf 1) 8)))
+                  (cols (logior (aref buf 2) (ash (aref buf 3) 8))))
+              (when (and (> rows 0) (> cols 0))
+                (list cols rows)))))
+        #+ccl
+        (ccl::%stack-block ((buf 8))
+          (#_ioctl 0 +TIOCGWINSZ+ :address buf)
+          (let ((rows (%ccl-get-u16 buf 0))
+                (cols (%ccl-get-u16 buf 2)))
+            (when (and (> rows 0) (> cols 0))
+              (list cols rows)))))
     (error (e)
       (warn "Failed to query terminal size: ~A" e)
       '(80 24))))
