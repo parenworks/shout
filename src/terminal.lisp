@@ -254,14 +254,18 @@ with :input t hangs because CCL doesn't inherit the terminal properly."
   (handler-case
       (progn
         #+sbcl
-        (let ((buf (make-array 8 :element-type '(unsigned-byte 8) :initial-element 0)))
-          (sb-sys:with-pinned-objects (buf)
-            (sb-posix:ioctl (sb-sys:fd-stream-fd sb-sys:*stdin*)
-                            #x5413 (sb-sys:vector-sap buf))
-            (let ((rows (logior (aref buf 0) (ash (aref buf 1) 8)))
-                  (cols (logior (aref buf 2) (ash (aref buf 3) 8))))
-              (when (and (> rows 0) (> cols 0))
-                (list cols rows)))))
+        (sb-alien:with-alien ((buf (sb-alien:array (sb-alien:unsigned 8) 8)))
+          (sb-alien:alien-funcall
+           (sb-alien:extern-alien "ioctl"
+                                  (function sb-alien:int sb-alien:int
+                                            sb-alien:unsigned-long (* t)))
+           (sb-sys:fd-stream-fd sb-sys:*stdin*)
+           #x5413
+           (sb-alien:addr (sb-alien:deref buf 0)))
+          (let ((rows (logior (sb-alien:deref buf 0) (ash (sb-alien:deref buf 1) 8)))
+                (cols (logior (sb-alien:deref buf 2) (ash (sb-alien:deref buf 3) 8))))
+            (when (and (> rows 0) (> cols 0))
+              (list cols rows))))
         #+ccl
         (ccl::%stack-block ((buf 8))
           (#_ioctl 0 +TIOCGWINSZ+ :address buf)
