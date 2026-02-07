@@ -1,4 +1,5 @@
 ;;; Build script for SHOUT executable
+;;; Supports SBCL and CCL
 
 (require :asdf)
 
@@ -24,8 +25,15 @@
 (force-output)
 
 ;; Build the executable
+#+sbcl
 (sb-ext:save-lisp-and-die "shout"
                           :toplevel #'shout:main
                           :executable t
                           :compression 1
                           :save-runtime-options t)
+
+#+ccl
+(ccl:save-application "shout"
+                      :toplevel-function #'shout:main
+                      :prepend-kernel t
+                      :init-file nil)

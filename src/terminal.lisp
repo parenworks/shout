@@ -49,10 +49,34 @@
 (defconstant +key-f11+ :f11)
 (defconstant +key-f12+ :f12)
 
+;;; Portable helpers
+
+(defun getenv (name)
+  "Portable environment variable lookup."
+  #+sbcl (sb-ext:posix-getenv name)
+  #+ccl (ccl:getenv name)
+  #-(or sbcl ccl) (uiop:getenv name))
+
+(defun run-program (program args &key input output error)
+  "Portable external program execution."
+  #+sbcl (sb-ext:run-program program args
+                             :input input :output output :error error)
+  #+ccl (ccl:run-program program args
+                         :input input :output output :error error
+                         :wait t)
+  #-(or sbcl ccl) (uiop:run-program (cons program args)))
+
+(defun run-shell-command (cmd)
+  "Run a shell command string via C system(). Used on CCL where run-program
+with :input t hangs because CCL doesn't inherit the terminal properly."
+  #+ccl (ccl::with-cstrs ((c cmd))
+          (#_system c))
+  #-ccl (declare (ignore cmd)))
+
 ;;; Environment configuration
 
 (defparameter *stty-path*
-  (or #+sbcl (sb-ext:posix-getenv "SHOUT_STTY_PATH")
+  (or (getenv "SHOUT_STTY_PATH")
       (ignore-errors (probe-file "/run/current-system/sw/bin/stty"))
       (ignore-errors (probe-file "/bin/stty"))
       (ignore-errors (probe-file "/usr/bin/stty"))
@@ -60,7 +84,7 @@
       "/bin/stty"))
 
 (defparameter *tty-path*
-  (or #+sbcl (sb-ext:posix-getenv "SHOUT_TTY_PATH")
+  (or (getenv "SHOUT_TTY_PATH")
       (let ((candidates '("/dev/tty" "/dev/pts/0" "/dev/console" "/dev/tty0")))
         (loop for path in candidates
               when (ignore-errors (open path :direction :input :if-does-not-exist nil))
@@ -69,12 +93,12 @@
 
 (defparameter *escape-timeout*
   (or (ignore-errors
-        (let ((timeout-str #+sbcl (sb-ext:posix-getenv "SHOUT_ESCAPE_TIMEOUT")))
+        (let ((timeout-str (getenv "SHOUT_ESCAPE_TIMEOUT")))
           (when timeout-str
             (let ((parsed (read-from-string timeout-str)))
               (if (numberp parsed) parsed nil)))))
-      (let ((term #+sbcl (sb-ext:posix-getenv "TERM"))
-            (alacritty-socket #+sbcl (sb-ext:posix-getenv "ALACRITTY_SOCKET")))
+      (let ((term (getenv "TERM"))
+            (alacritty-socket (getenv "ALACRITTY_SOCKET")))
         (cond
           (alacritty-socket 0.02)
           ((and term (search "alacritty" term)) 0.02)
@@ -98,42 +122,53 @@
 
 (defmethod enable-raw-mode ((mode terminal-mode))
   (unless (terminal-raw-p mode)
+    #+sbcl
     (handler-case
-        #+sbcl
         (sb-ext:run-program (namestring *stty-path*) '("-echo" "raw" "-icanon")
                             :input t :output nil :error nil)
       (error (e)
         (handler-case
-            #+sbcl
             (sb-ext:run-program "sh" (list "-c" "stty -echo raw -icanon")
                                 :input t :output nil :error nil)
           (error (e2)
             (warn "Failed to enable raw mode: ~A / ~A" e e2)))))
+    #+ccl
+    (run-shell-command (format nil "~A -echo raw -icanon </dev/tty" (namestring *stty-path*)))
     (setf (terminal-raw-p mode) t)))
 
 (defmethod disable-raw-mode ((mode terminal-mode))
   (when (terminal-raw-p mode)
+    #+sbcl
     (handler-case
-        #+sbcl
         (sb-ext:run-program (namestring *stty-path*) '("echo" "-raw" "icanon")
                             :input t :output nil :error nil)
       (error (e)
         (handler-case
-            #+sbcl
             (sb-ext:run-program "sh" (list "-c" "stty echo -raw icanon")
                                 :input t :output nil :error nil)
           (error (e2)
             (declare (ignore e2))
             (warn "Failed to disable raw mode: ~A" e)))))
+    #+ccl
+    (run-shell-command (format nil "~A echo -raw icanon </dev/tty" (namestring *stty-path*)))
     (setf (terminal-raw-p mode) nil)))
 
 (defmethod query-size ((mode terminal-mode))
   (declare (ignore mode))
   (handler-case
-      (let* ((size-str (with-output-to-string (s)
-                         #+sbcl
-                         (sb-ext:run-program (namestring *stty-path*) '("size")
-                                             :input t :output s :error nil)))
+      (let* ((size-str
+               #+sbcl
+               (with-output-to-string (s)
+                 (sb-ext:run-program (namestring *stty-path*) '("size")
+                                     :input t :output s :error nil))
+               #+ccl
+               (with-output-to-string (s)
+                 (let ((proc (ccl:run-program "sh"
+                              (list "-c" (format nil "~A size </dev/tty" (namestring *stty-path*)))
+                              :input nil :output :stream :error nil :wait nil)))
+                   (loop for line = (read-line (ccl:external-process-output-stream proc) nil nil)
+                         while line do (write-string line s))
+                   (ccl::external-process-wait proc))))
              (parts (cl-ppcre:split "\\s+" (string-trim '(#\Newline #\Space) size-str))))
         (when (= (length parts) 2)
           (list (parse-integer (second parts))
@@ -184,7 +219,9 @@
 
 (defclass input-reader ()
   ((stream :initarg :stream :accessor reader-stream :initform nil)
-   (tty-path :initarg :tty-path :accessor reader-tty-path :initform *tty-path*))
+   (tty-path :initarg :tty-path :accessor reader-tty-path :initform *tty-path*)
+   (fd :initarg :fd :accessor reader-fd :initform nil
+       :documentation "Raw file descriptor for non-blocking reads (CCL)"))
   (:documentation "Reads and parses keyboard input from TTY"))
 
 (defgeneric reader-open (reader)
@@ -197,29 +234,57 @@
   (:documentation "Read a key event from the input stream"))
 
 (defmethod reader-open ((reader input-reader))
-  (unless (and (reader-stream reader) (open-stream-p (reader-stream reader)))
-    (setf (reader-stream reader)
-          (open (reader-tty-path reader)
-                :direction :input
-                :element-type '(unsigned-byte 8)
-                :if-does-not-exist :error))
+  (unless (and (reader-stream reader)
+               #+sbcl (open-stream-p (reader-stream reader))
+               #+ccl (reader-fd reader))
     #+sbcl
-    (let ((fd (sb-sys:fd-stream-fd (reader-stream reader))))
-      (sb-posix:fcntl fd sb-posix:f-setfl
-                      (logior (sb-posix:fcntl fd sb-posix:f-getfl)
-                              sb-posix:o-nonblock))))
+    (progn
+      (setf (reader-stream reader)
+            (open (reader-tty-path reader)
+                  :direction :input
+                  :element-type '(unsigned-byte 8)
+                  :if-does-not-exist :error))
+      (let ((fd (sb-sys:fd-stream-fd (reader-stream reader))))
+        (sb-posix:fcntl fd sb-posix:f-setfl
+                        (logior (sb-posix:fcntl fd sb-posix:f-getfl)
+                                sb-posix:o-nonblock))))
+    #+ccl
+    (ccl::with-cstrs ((path (reader-tty-path reader)))
+      (let ((fd (#_open path (logior #$O_RDONLY #$O_NONBLOCK))))
+        (when (< fd 0)
+          (error "Failed to open ~A" (reader-tty-path reader)))
+        (setf (reader-fd reader) fd)
+        (setf (reader-stream reader) t))))
   reader)
 
 (defmethod reader-close ((reader input-reader))
+  #+sbcl
   (when (and (reader-stream reader) (open-stream-p (reader-stream reader)))
     (close (reader-stream reader))
+    (setf (reader-stream reader) nil))
+  #+ccl
+  (when (reader-fd reader)
+    (#_close (reader-fd reader))
+    (setf (reader-fd reader) nil)
     (setf (reader-stream reader) nil))
   reader)
 
 (defun read-byte-nonblocking (stream)
+  "Read a single byte without blocking. Returns NIL if nothing available."
+  #+sbcl
   (handler-case
       (read-byte stream nil nil)
-    #+sbcl (sb-int:simple-stream-error () nil)))
+    (sb-int:simple-stream-error () nil))
+  #+ccl
+  (ccl::%stack-block ((buf 1))
+    (let ((n (#_read stream buf 1)))
+      (if (> n 0)
+          (ccl::%get-unsigned-byte buf 0)
+          nil)))
+  #-(or sbcl ccl)
+  (handler-case
+      (read-byte stream nil nil)
+    (stream-error () nil)))
 
 (defun wait-for-escape-sequence (stream timeout)
   (let ((start (get-internal-real-time))
@@ -231,8 +296,15 @@
         (return nil))
       (sleep 0.0005))))
 
+(defun reader-input-source (reader)
+  "Return the appropriate input source for read-byte-nonblocking.
+On SBCL this is the stream, on CCL this is the raw FD."
+  #+sbcl (reader-stream reader)
+  #+ccl (reader-fd reader)
+  #-(or sbcl ccl) (reader-stream reader))
+
 (defmethod read-key-event ((reader input-reader))
-  (let* ((stream (reader-stream reader))
+  (let* ((stream (reader-input-source reader))
          (byte (read-byte-nonblocking stream)))
     (unless byte
       (return-from read-key-event nil))
@@ -248,7 +320,7 @@
             (let ((params nil)
                   (final-byte nil))
               (loop
-                (setf final-byte (read-byte stream nil nil))
+                (setf final-byte (read-byte-nonblocking stream))
                 (unless final-byte (return))
                 (cond
                   ((and (>= final-byte 48) (<= final-byte 57))
@@ -313,7 +385,7 @@
               (valid t))
          (setf (aref bytes 0) byte)
          (loop for i from 1 below utf8-bytes
-               for b = (read-byte stream nil nil)
+               for b = (read-byte-nonblocking stream)
                do (if (and b (= (logand b #xC0) #x80))
                       (setf (aref bytes i) b)
                       (setf valid nil)))

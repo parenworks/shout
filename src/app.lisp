@@ -197,7 +197,8 @@ For unconfigured items like 'discord:unconfigured', extract the prefix."
          (n-preview-clients (loop for item in (checkbox-list-items (app-client-list app))
                                   when (gethash (car item) checked)
                                   count t))
-         (preview-h (+ 2 (max 1 n-preview-clients)))
+         ;; Each over-limit client may show a truncation preview line
+         (preview-h (+ 2 (max 1 (* 2 n-preview-clients))))
          (compose-h (- usable-h preview-h)))
     (setf (shout.layout:screen-width s) tw
           (shout.layout:screen-height s) th)
@@ -268,36 +269,60 @@ For unconfigured items like 'discord:unconfigured', extract the prefix."
                                   (+ text-len tag-len)
                                   text-len)))
             (cursor-to (+ inner-y row) inner-x)
-            (if limit
-                ;; Client with char limit: show progress bar
-                (let* ((bar-w (max 8 (- inner-w 20)))
-                       (ratio (min 1.0 (/ total-len (max 1 limit))))
-                       (filled (round (* bar-w ratio)))
-                       (empty (- bar-w filled)))
-                  (cond
-                    ((> ratio 0.9) (fg :error))
-                    ((> ratio 0.7) (fg :warning))
-                    (t (fg :accent)))
-                  (loop repeat (max 0 filled) do (write-string "█" *terminal-io*))
-                  (fg :muted)
-                  (loop repeat (max 0 empty) do (write-string "░" *terminal-io*))
-                  (write-char #\Space *terminal-io*)
-                  (cond
-                    ((> total-len limit) (fg :error))
-                    ((> ratio 0.9) (fg :warning))
-                    (t (fg :white)))
-                  (format *terminal-io* "~D/~D " total-len limit))
-                ;; Client without char limit: show count + no limit
-                (progn
-                  (fg :success)
-                  (write-string "✓ " *terminal-io*)
-                  (fg :white)
-                  (format *terminal-io* "~D chars " total-len)
-                  (fg :muted)
-                  (write-string "no limit " *terminal-io*)))
-            (fg :muted)
-            (write-string item-key *terminal-io*)
-            (reset)
+            (let ((name-len (length item-key))
+                  (count-str (if limit (format nil "~D/~D" total-len limit)
+                                 (format nil "~D chars" total-len))))
+              (if limit
+                  ;; Client with char limit: show progress bar
+                  (let* ((count-w (+ (length count-str) 1 name-len 2))
+                         (bar-w (max 4 (- inner-w count-w 1)))
+                         (ratio (min 1.0 (/ total-len (max 1 limit))))
+                         (filled (round (* bar-w ratio)))
+                         (empty (- bar-w filled)))
+                    (cond
+                      ((> ratio 0.9) (fg :error))
+                      ((> ratio 0.7) (fg :warning))
+                      (t (fg :accent)))
+                    (loop repeat (max 0 filled) do (write-string "█" *terminal-io*))
+                    (fg :muted)
+                    (loop repeat (max 0 empty) do (write-string "░" *terminal-io*))
+                    (write-char #\Space *terminal-io*)
+                    (cond
+                      ((> total-len limit) (fg :error))
+                      ((> ratio 0.9) (fg :warning))
+                      (t (fg :white)))
+                    (write-string count-str *terminal-io*)
+                    (write-char #\Space *terminal-io*)
+                    (fg :muted)
+                    (write-string item-key *terminal-io*)
+                    (reset)
+                    ;; Show truncation preview when over limit
+                    (when (and (> total-len limit) (< (1+ row) inner-h))
+                      (incf row)
+                      (cursor-to (+ inner-y row) inner-x)
+                      (fg :muted)
+                      (write-string "→ " *terminal-io*)
+                      (fg :warning)
+                      (let* ((truncated (handler-case
+                                            (org.shirakumo.multiposter:compose-post-text
+                                             nil text nil
+                                             :tags (when (client-tags-in-body-p type-name) tags)
+                                             :char-limit limit
+                                             :overflow-mode :truncate)
+                                          (error () "...")))
+                             (display-len (min (- inner-w 2) (length truncated))))
+                        (write-string (subseq truncated 0 display-len) *terminal-io*))
+                      (reset)))
+                  ;; Client without char limit: show count + no limit
+                  (progn
+                    (fg :success)
+                    (write-string "✓ " *terminal-io*)
+                    (fg :white)
+                    (write-string count-str *terminal-io*)
+                    (fg :muted)
+                    (write-string " no limit " *terminal-io*)
+                    (write-string item-key *terminal-io*)
+                    (reset))))
             (incf row))))))))
 
 ;;; ============================================================
@@ -599,8 +624,20 @@ Returns :handled, :quit, or NIL."
   (format t "  Tags saved to ~~/.config/shout/tags.lisp~%")
   (format t "  Clients configured via multiposter (~~/.config/multiposter/)~%"))
 
+(defun command-line-args ()
+  "Return command-line arguments (excluding the program name)."
+  #+sbcl (rest sb-ext:*posix-argv*)
+  #+ccl (rest ccl:*command-line-argument-list*)
+  #-(or sbcl ccl) nil)
+
+(defun quit-lisp (&optional (code 0))
+  "Exit the Lisp process with the given exit code."
+  #+sbcl (sb-ext:exit :code code)
+  #+ccl (ccl:quit code)
+  #-(or sbcl ccl) (uiop:quit code))
+
 (defun main ()
-  (let ((args #+sbcl (rest sb-ext:*posix-argv*) #-sbcl nil))
+  (let ((args (command-line-args)))
     (cond
       ((or (find "--help" args :test #'string=)
            (find "-h" args :test #'string=))
@@ -615,4 +652,4 @@ Returns :handled, :quit, or NIL."
            (shout)
          (error (e)
            (format *error-output* "~&SHOUT error: ~A~%" e)
-           #+sbcl (sb-ext:exit :code 1)))))))
+           (quit-lisp 1)))))))

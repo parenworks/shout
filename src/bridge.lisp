@@ -117,9 +117,13 @@
 ;;; SHOUT config directory and tag persistence
 ;;; ============================================================
 
+(defun bridge-getenv (name)
+  #+sbcl (sb-ext:posix-getenv name)
+  #+ccl (ccl:getenv name)
+  #-(or sbcl ccl) (uiop:getenv name))
+
 (defun shout-config-dir ()
-  (let ((xdg (ignore-errors
-               #+sbcl (sb-ext:posix-getenv "XDG_CONFIG_HOME"))))
+  (let ((xdg (ignore-errors (bridge-getenv "XDG_CONFIG_HOME"))))
     (merge-pathnames "shout/"
                      (if (and xdg (> (length xdg) 0))
                          (pathname (format nil "~A/" xdg))

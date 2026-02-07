@@ -38,7 +38,7 @@ A pure ANSI terminal user interface for [Multiposter](https://codeberg.org/shinm
 
 ## Requirements
 
-- [SBCL](http://www.sbcl.org/) (Steel Bank Common Lisp)
+- [SBCL](http://www.sbcl.org/) (recommended) or [CCL](https://ccl.clozure.com/) (experimental)
 - [Quicklisp](https://www.quicklisp.org/)
 - [Multiposter](https://codeberg.org/shinmera/multiposter) source (with at least one configured client)
 - A terminal with Unicode and 256-colour support
@@ -55,7 +55,12 @@ cd shout
 #   ~/common-lisp/multiposter/
 #   ~/quicklisp/local-projects/multiposter/
 
+# Build with SBCL (default)
 make build
+
+# Build with CCL
+make build-ccl
+
 sudo make install   # installs to /usr/local/bin/shout
 ```
 
