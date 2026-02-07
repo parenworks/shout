@@ -595,11 +595,42 @@ Returns :handled, :quit, or NIL."
 
 (defun shout ()
   (let ((app (make-instance 'shout-app)))
-    (with-raw-terminal
-      (setup-app app)
-      (unwind-protect
-           (run-app app)
-        (teardown-app app)))))
+    (enter-alternate-screen)
+    (enable-raw-mode *terminal-mode*)
+    (cursor-hide)
+    (setup-app app)
+    (refresh-layout app)
+    (render-screen (app-screen app))
+    ;; Check client readiness after first paint so UI appears instantly
+    (unless *demo-mode*
+      (add-status (app-status-display app) "⟳" :muted "Checking clients...")
+      (render-screen (app-screen app))
+      (check-clients-ready (app-clients app))
+      ;; Update status and client list display after ready-p checks
+      (let ((n-ready (count-if #'client-ready-p (app-clients app)))
+            (n-total (length (app-clients app))))
+        ;; Update checkbox labels to reflect readiness
+        (dolist (ci (app-clients app))
+          (let* ((key (client-name ci))
+                 (item (find key (checkbox-list-items (app-client-list app))
+                             :key #'car :test #'string=)))
+            (when item
+              (setf (cdr item)
+                    (format nil "~A (~A)~:[~; ✗~]"
+                            (client-name ci)
+                            (client-type-name ci)
+                            (not (client-ready-p ci)))))))
+        (add-status (app-status-display app) "✓" :success
+                    (format nil "~D/~D client~:P ready" n-ready n-total)))
+      (render-screen (app-screen app)))
+    (unwind-protect
+         (run-app app)
+      (teardown-app app)
+      (close-tty-stream)
+      (cursor-show)
+      (disable-raw-mode *terminal-mode*)
+      (leave-alternate-screen)
+      (reset))))
 
 (defun print-help ()
   (format t "SHOUT - Social Herald Over Unix Terminals~%~%")

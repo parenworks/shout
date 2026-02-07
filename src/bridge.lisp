@@ -153,10 +153,19 @@
 ;;; Config loading
 ;;; ============================================================
 
+(defvar *skip-client-setup* nil
+  "When T, suppress network calls during config loading.")
+
+(defmethod org.shirakumo.multiposter:setup :around ((client org.shirakumo.multiposter:client) &rest args)
+  (declare (ignore args))
+  (unless *skip-client-setup*
+    (call-next-method)))
+
 (defun load-multiposter-config ()
   (setf *multiposter*
-        (handler-bind ((error #'continue))
-          (org.shirakumo.multiposter:load-config nil)))
+        (let ((*skip-client-setup* t))
+          (handler-bind ((error #'continue))
+            (org.shirakumo.multiposter:load-config nil))))
   *multiposter*)
 
 ;;; ============================================================
@@ -174,12 +183,20 @@
                                       :type-name (string-downcase
                                                   (symbol-name (type-of client)))
                                       :enabled-p (org.shirakumo.multiposter::enabled-p client)
-                                      :ready-p (ignore-errors
-                                                 (org.shirakumo.multiposter:ready-p client))
+                                      :ready-p t
                                       :client-object client)
                        clients))
                (org.shirakumo.multiposter:clients *multiposter*))
       (sort clients #'string< :key #'client-name))))
+
+(defun check-clients-ready (clients &key callback)
+  "Check ready-p for each client, calling CALLBACK with (client-info ready-p) for each."
+  (dolist (ci clients)
+    (let ((ready (ignore-errors
+                   (org.shirakumo.multiposter:ready-p (client-object ci)))))
+      (setf (client-ready-p ci) ready)
+      (when callback
+        (funcall callback ci ready)))))
 
 ;;; ============================================================
 ;;; Client configuration

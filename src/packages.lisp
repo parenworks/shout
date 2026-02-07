@@ -202,7 +202,8 @@
    #:load-saved-tags
    #:save-tags
    #:add-client-to-config
-   #:client-object))
+   #:client-object
+   #:check-clients-ready))
 
 (defpackage #:shout
   (:use #:cl #:shout.ansi #:shout.terminal #:shout.widgets #:shout.layout #:shout.bridge)
